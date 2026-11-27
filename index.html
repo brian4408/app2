@@ -43,6 +43,7 @@
     .account-user { display: none; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; }
     .account-user img { width: 28px; height: 28px; object-fit: cover; border-radius: 50%; background: #e8e6dc; }
     .auth-error { color: #a74232; font-size: 11px; max-width: 270px; text-align: right; }
+    .retry-cloud { display: none; border: 0; padding: 3px 0; background: transparent; color: #194c3b; font-size: 11px; font-weight: 700; text-decoration: underline; }
     .intro { margin: 0 0 24px; }
     .eyebrow { color: var(--orange); font-size: 11px; text-transform: uppercase; letter-spacing: .16em; font-weight: 800; margin: 0 0 9px; }
     h1 { margin: 0; font-family: Georgia, "Noto Serif TC", serif; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.04em; line-height: 1.15; }
@@ -114,6 +115,7 @@
         <div>
           <div class="auth-status" id="authStatus" aria-live="polite">Firebase 登入尚未設定</div>
           <div class="auth-error" id="authError" role="alert"></div>
+          <button class="retry-cloud" id="retryCloud" type="button">重新載入雲端資料</button>
         </div>
         <button class="google-btn" id="googleSignIn" type="button" disabled><span class="google-g" aria-hidden="true">G</span>使用 Google 登入</button>
         <div class="account-user" id="accountUser"><img id="userPhoto" alt=""><span id="userName"></span><button class="signout-btn" id="signOut" type="button">登出</button></div>
@@ -177,9 +179,11 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app.js';
     import {
       GoogleAuthProvider,
+      getRedirectResult,
       getAuth,
       onAuthStateChanged,
       signInWithPopup,
+      signInWithRedirect,
       signOut
     } from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-auth.js';
     import {
@@ -238,6 +242,9 @@
           provider.setCustomParameters({ prompt: 'select_account' });
           signInButton.disabled = false;
           authStatus.textContent = '資料已儲存在這台裝置';
+          getRedirectResult(auth).catch(error => {
+            authError.textContent = authErrorMessage(error);
+          });
           onAuthStateChanged(auth, async user => {
             authError.textContent = '';
             signInButton.style.display = user ? 'none' : 'inline-flex';
@@ -255,7 +262,11 @@
           signInButton.addEventListener('click', async () => {
             authError.textContent = '';
             signInButton.disabled = true;
-            try { await signInWithPopup(auth, provider); }
+            try {
+              const mobileBrowser = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+              if (mobileBrowser) await signInWithRedirect(auth, provider);
+              else await signInWithPopup(auth, provider);
+            }
             catch (error) { authError.textContent = authErrorMessage(error); }
             finally { signInButton.disabled = false; }
           });
@@ -263,6 +274,9 @@
             authError.textContent = '';
             try { await signOut(auth); }
             catch (error) { authError.textContent = authErrorMessage(error); }
+          });
+          $('retryCloud').addEventListener('click', () => {
+            if (auth.currentUser) switchAccount(auth.currentUser);
           });
         } catch (error) {
           authStatus.textContent = 'Firebase 初始化失敗，請確認設定值';
@@ -314,6 +328,8 @@
       }
       async function switchAccount(user) {
         const loadId = ++accountLoadId;
+        $('authError').textContent = '';
+        $('retryCloud').style.display = 'none';
         if (stopAccountListener) stopAccountListener();
         stopAccountListener = null;
         currentUid = user?.uid || null;
@@ -368,11 +384,13 @@
             if (loadId !== accountLoadId) return;
             $('authStatus').textContent = '雲端同步失敗';
             $('authError').textContent = firestoreErrorMessage(error);
+            $('retryCloud').style.display = 'inline-block';
           });
         } catch (error) {
           if (loadId !== accountLoadId) return;
           $('authStatus').textContent = '無法載入雲端餐廳';
           $('authError').textContent = firestoreErrorMessage(error);
+          $('retryCloud').style.display = 'inline-block';
           // 暫時顯示這個帳戶上次成功載入的本機快取。
           items = loadItems(`${STORAGE_KEY}:user:${user.uid}`);
           render();
@@ -381,10 +399,13 @@
       function firestoreErrorMessage(error) {
         const messages = {
           'permission-denied': 'Firestore 權限不足，請檢查資料庫安全規則。',
-          'unavailable': '目前連不上 Firestore，請檢查網路後重試。',
-          'failed-precondition': 'Firestore 尚未完成設定，請確認資料庫已建立。'
+          'unavailable': 'Firestore 暫時無法連線，請檢查網路、資料庫是否已建立，以及瀏覽器是否封鎖連線。',
+          'failed-precondition': 'Firestore 尚未完成設定，請確認資料庫與規則。',
+          'not-found': '找不到 Firestore 資料庫，請確認建立的是 (default) 資料庫。'
         };
-        return messages[error?.code] || `Firestore 錯誤：${error?.message || '請確認資料庫設定。'}`;
+        console.error('Firestore request failed:', error);
+        const reason = messages[error?.code] || error?.message || '請確認資料庫設定。';
+        return `${reason}（${error?.code || 'unknown'}）`;
       }
       function text(s) { return String(s || '').trim(); }
       function priceLabel(v) { return v ? `${v} 價位` : ''; }
