@@ -278,6 +278,9 @@
           $('retryCloud').addEventListener('click', () => {
             if (auth.currentUser) switchAccount(auth.currentUser);
           });
+          window.addEventListener('online', () => {
+            if (auth.currentUser) switchAccount(auth.currentUser);
+          });
         } catch (error) {
           authStatus.textContent = 'Firebase 初始化失敗，請確認設定值';
           authError.textContent = error.message || '無法連接 Firebase';
@@ -388,12 +391,29 @@
           });
         } catch (error) {
           if (loadId !== accountLoadId) return;
-          $('authStatus').textContent = '無法載入雲端餐廳';
+          // Firestore may be temporarily offline. Keep the page usable with this account's local cache.
+          // Writes still go through the Firestore SDK queue and can sync after connectivity returns.
+          accountDataReady = true;
+          $('authStatus').textContent = '雲端暫時離線；目前使用本機快取';
           $('authError').textContent = firestoreErrorMessage(error);
           $('retryCloud').style.display = 'inline-block';
-          // 暫時顯示這個帳戶上次成功載入的本機快取。
           items = loadItems(`${STORAGE_KEY}:user:${user.uid}`);
           render();
+          stopAccountListener = onSnapshot(doc(db, 'users', user.uid), snapshot => {
+            if (loadId !== accountLoadId) return;
+            const restaurants = snapshot.data()?.restaurants;
+            if (!Array.isArray(restaurants)) return;
+            items = restaurants.filter(item => item && typeof item.id === 'string' && typeof item.name === 'string');
+            cacheItems(`${STORAGE_KEY}:user:${user.uid}`, items);
+            render();
+            $('authStatus').textContent = '已同步到你的 Google 帳戶';
+            $('authError').textContent = '';
+            $('retryCloud').style.display = 'none';
+          }, listenerError => {
+            if (loadId !== accountLoadId) return;
+            $('authError').textContent = firestoreErrorMessage(listenerError);
+            $('retryCloud').style.display = 'inline-block';
+          });
         }
       }
       function firestoreErrorMessage(error) {
